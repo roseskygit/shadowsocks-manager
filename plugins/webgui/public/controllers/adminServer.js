@@ -3,9 +3,10 @@ const app = angular.module('app');
 app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', '$localStorage', 'adminApi', '$timeout', '$interval', 'serverChartDialog',
   ($scope, $http, $state, moment, $localStorage, adminApi, $timeout, $interval, serverChartDialog) => {
     $scope.setTitle('服务器');
+    $scope.setMenuSearchButton('search');
     $scope.setMenuRightButton('timeline');
     if(!$localStorage.admin.serverChart) {
-      $localStorage.admin.serverChart = { showChart: true };
+      $localStorage.admin.serverChart = { showFlow: true, showChart: true };
     }
     $scope.serverChart = $localStorage.admin.serverChart;
     $scope.$on('RightButtonClick', () => {
@@ -60,7 +61,11 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
       };
     }
     $scope.servers = $localStorage.admin.serverInfo.data;
+    $scope.online = {};
     const updateServerInfo = () => {
+      $http.get('/api/admin/account/online').then(success => {
+        $scope.online = success.data;
+      });
       adminApi.getServer(true).then(servers => {
         if(servers.map(s => s.id).join('') === $scope.servers.map(s => s.id).join('')) {
           $scope.servers.forEach((server, index) => {
@@ -68,6 +73,8 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
             server.name = servers[index].name;
             server.port = servers[index].port;
             server.status = servers[index].status;
+            server.isGfw = servers[index].isGfw;
+            server.number = servers[index].number;
             adminApi.getServerFlow(server.id).then(flow => {
               if(!server.flow) {
                 server.flow = {};
@@ -88,6 +95,7 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
                   success.flow.forEach((number, index) => {
                     server.chart.data[0][index] = number;
                   });
+                  server.sumFlowOneHour = server.chart.data[0].reduce((a, b) => a + b);
                 });
               }, index * 1000);
             }
@@ -98,7 +106,7 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
             data: servers,
           };
           $scope.servers = servers;
-          $scope.servers.forEach(server => {
+          $scope.servers.forEach((server, index) => {
             adminApi.getServerFlow(server.id).then(flow => {
               server.flow = flow;
             });
@@ -114,10 +122,20 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
                   success.flow.forEach((number, index) => {
                     server.chart.data[0][index] = number;
                   });
+                  server.sumFlowOneHour = server.chart.data[0].reduce((a, b) => a + b);
                 });
               }, index * 1000);
             }
           });
+        }
+        const { number } = $scope.servers.reduce((a, b) => {
+          return { number: (a.number >= 0 ? a.number : 1) + (b.number >= 0 ? b.number : 1) };
+        }, { number: 0 });
+        if($state.current.name !== 'admin.server') { return; }
+        if ($scope.servers.length === number) {
+          $scope.setFabNumber($scope.servers.length);
+        } else {
+          $scope.setFabNumber($scope.servers.length + ' / ' + number);
         }
       });
     };
@@ -137,28 +155,80 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
     $scope.toServerPage = (serverId) => {
       $state.go('admin.serverPage', { serverId });
     };
-    $scope.setFabButton(() => {
+    $scope.setFabButton($scope.id === 1 ? () => {
       $state.go('admin.addServer');
-    });
+    } : null);
+    $scope.addServer = () => {
+      $state.go('admin.addServer');
+    };
+    $scope.showServer = serverName => {
+      if(!$scope.menuSearch.text) { return true; }
+      return serverName.toString().includes($scope.menuSearch.text);
+    };
   }
 ])
-.controller('AdminServerPageController', ['$scope', '$state', '$stateParams', '$http', 'moment', '$mdDialog', 'adminApi', '$q', '$mdMedia',
-  ($scope, $state, $stateParams, $http, moment, $mdDialog, adminApi, $q, $mdMedia) => {
+.controller('AdminServerPageController', ['$scope', '$state', '$stateParams', '$http', 'moment', '$mdDialog', 'adminApi', '$localStorage', '$mdMedia', '$interval', 'banDialog',
+  ($scope, $state, $stateParams, $http, moment, $mdDialog, adminApi, $localStorage, $mdMedia, $interval, banDialog) => {
     $scope.setTitle('服务器');
     $scope.setMenuButton('arrow_back', 'admin.server');
     const serverId = $stateParams.serverId;
-    $http.get(`/api/admin/server/${ serverId }`).then(success => {
-      $scope.server = success.data;
-    }).catch(() => {
-      // $state.go('admin.server');
-    });
+    if(!$localStorage.admin.serverPortFilter) {
+      $localStorage.admin.serverPortFilter = {
+        value: 'all',
+      };
+    }
+    $scope.accountFilter = $localStorage.admin.serverPortFilter;
+    $scope.onlineAccount = [];
+    $scope.getServerInfoError = false;
+    const getServerInfo = () => {
+      $http.get(`/api/admin/server/${ serverId }`).then(success => {
+        $scope.server = success.data;
+        $scope.isSS = $scope.server.type === 'Shadowsocks';
+        $scope.isWG = $scope.server.type === 'WireGuard';
+        $scope.isTJ = $scope.server.type === 'Trojan';
+        $scope.currentPorts = {};
+        $scope.server.ports.forEach(f => {
+          $scope.currentPorts[f.port] = {
+            port: f.port,
+            password: f.password,
+            exists: true,
+          };
+        });
+        return $http.get('/api/admin/account/online', {
+          params: { serverId }
+        });
+      }).then(success => {
+        $scope.onlineAccount = success.data;
+        return adminApi.getAccount();
+      }).then(accounts => {
+        accounts.forEach(account => {
+          if(!$scope.currentPorts[account.port + $scope.server.shift]) {
+            $scope.currentPorts[account.port + $scope.server.shift] = {
+              id: account.id,
+              port: account.port + $scope.server.shift,
+              password: account.password,
+              exists: false,
+            };
+          } else {
+            $scope.currentPorts[account.port + $scope.server.shift].id = account.id;
+          }
+        });
+        $scope.portNumber = Object.keys($scope.currentPorts).filter(f => {
+          return $scope.currentPorts[f].exists;
+        }).length;
+        $scope.getServerInfoError = false;
+      }).catch(() => {
+        $scope.getServerInfoError = true;
+      });
+    };
+    getServerInfo();
+    $scope.setInterval($interval(() => {
+      getServerInfo();
+    }, 60 * 1000));
     $scope.toAccountPage = port => {
       adminApi.getAccountId(port - $scope.server.shift).then(id => {
         $state.go('admin.accountPage', { accountId: id });
       });
-    };
-    $scope.editServer = () => {
-      $state.go('admin.editServer', { serverId });
     };
     $scope.deleteServer = id => {
       const confirm = $mdDialog.confirm()
@@ -171,11 +241,8 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
         return $http.delete(`/api/admin/server/${ serverId }`);
       }).then(() => {
         $state.go('admin.server');
-      }).catch(() => {
-
-      });
+      }).catch(() => {});
     };
-
     $scope.flowType = 'day';
     const flowTime = {
       hour: Date.now(),
@@ -203,9 +270,12 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
       }
     };
     const setChart = (lineData, pieData) => {
+      const pieDataSort = pieData.sort((a, b) => {
+        return a.flow - b.flow;
+      });
       $scope.pieChart = {
-        data: pieData.map(m => m.flow),
-        labels: pieData.map(m => m.port + (m.userName ? ` [${ m.userName }]` : '')),
+        data: pieDataSort.map(m => m.flow),
+        labels: pieDataSort.map(m => m.port + (m.userName ? ` [${ m.userName }]` : '')),
         options: {
           responsive: false,
           tooltips: {
@@ -215,7 +285,6 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
               label: function(tooltipItem, data) {
                 const label = data.labels[tooltipItem.index];
                 const datasetLabel = data.datasets[tooltipItem.datasetIndex].data[tooltipItem.index];
-                //return label + ': ' + scaleLabel(datasetLabel);
                 return [
                   label, scaleLabel(datasetLabel)
                 ];
@@ -290,29 +359,88 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
       if($mdMedia('xs')) {
         return {
           line: [ 320, 170 ],
-          pie: [ 170, 170 ],
+          pie: [ 180, 170 ],
         };
       } else if($mdMedia('sm')) {
         return {
           line: [ 360, 190 ],
-          pie: [ 190, 190 ],
+          pie: [ 205, 190 ],
         };
       } else if($mdMedia('md')) {
         return {
           line: [ 360, 180 ],
-          pie: [ 180, 180 ],
+          pie: [ 360, 180 ],
         };
       } else if($mdMedia('gt-md')) {
         return {
           line: [ 540, 240 ],
-          pie: [ 240, 240 ],
+          pie: [ 450, 240 ],
         };
       }
     };
+    $scope.setFabButton($scope.id === 1 ? () => {
+      $state.go('admin.editServer', { serverId });
+    } : null, 'mode_edit');
+    $scope.banAccount = (accountId) => {
+      banDialog.show(serverId, accountId);
+    };
+    $scope.setMenuSearchButton('search');
+    $scope.matchPort = (account, searchStr) => {
+      let filter = true;
+      let search = true;
+      if($scope.accountFilter.value === 'all') {
+        filter = true;
+      } else if($scope.accountFilter.value === 'white') {
+        filter = account.exists;
+      } else if($scope.accountFilter.value === 'red') {
+        filter = !account.exists;
+      } else {
+        filter = $scope.onlineAccount.includes(account.id);
+      }
+      if(!searchStr) {
+        search = true;
+      } else {
+        search = (account.port.toString().includes(searchStr) || account.password.toString().includes(searchStr));
+      }
+      return filter && search;
+    };
+    $scope.accountColor = account => {
+      if(account.exists === false) {
+        return { background: 'red-50' };
+      } else if($scope.onlineAccount.includes(account.id)) {
+        return { background: 'blue-50' };
+      }
+      return {};
+    };
+    // $scope.$on('cancelSearch', () => {
+      
+    // });
+    // let timeoutPromise;
+    // $scope.$watch('menuSearch.text', () => {
+    //   if(!$scope.menuSearch.text) { return; }
+    //   timeoutPromise && $timeout.cancel(timeoutPromise);
+    //   timeoutPromise = $timeout(() => {
+        
+    //   }, 500);
+    // });
+    let serverIds = [ serverId ];
+    $http.get('/api/admin/server').then(success => {
+      serverIds = success.data.map(s => s.id);
+    });
+    $scope.nextServer = () => {
+      const currentIndex = serverIds.indexOf(+serverId);
+      const nextServerId = serverIds[(currentIndex + 1) % serverIds.length];
+      $state.go('admin.serverPage', { serverId: nextServerId });
+    };
+    $scope.prevServer = () => {
+      const currentIndex = serverIds.indexOf(+serverId);
+      const prevServerId = serverIds[(currentIndex - 1 + serverIds.length) % serverIds.length];
+      $state.go('admin.serverPage', { serverId: prevServerId });
+    };
   }
 ])
-.controller('AdminAddServerController', ['$scope', '$state', '$stateParams', '$http', 'alertDialog',
-  ($scope, $state, $stateParams, $http, alertDialog) => {
+.controller('AdminAddServerController', ['$scope', '$state', '$stateParams', '$http', 'alertDialog', '$q',
+  ($scope, $state, $stateParams, $http, alertDialog, $q) => {
     $scope.setTitle('新增服务器');
     $scope.setMenuButton('arrow_back', 'admin.server');
     $scope.methods = [
@@ -328,19 +456,53 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
       'aes-256-gcm',
       'aes-192-gcm',
       'aes-128-gcm',
+      'rc4-md5',
+      'bf-cfb',
+      'salsa20',
+      'chacha20',
       'chacha20-ietf',
-      'chacha20-ietf-poly1305'
+      'chacha20-ietf-poly1305',
+      'xchacha20-ietf-poly1305'
     ];
     $scope.setMethod = () => {
       $scope.server.method = $scope.methodSearch;
     };
     $scope.server = {
-      scale: 1,
-      shift: 0,
+      type: $stateParams.type || 'Shadowsocks',
+      name: $stateParams.name ? $stateParams.name + ' copy' :'',
+      comment: $stateParams.comment,
+      address: $stateParams.address,
+      port: $stateParams.port,
+      password: $stateParams.password,
+      method: $stateParams.method || 'aes-256-cfb',
+      scale: $stateParams.scale || 1,
+      shift: $stateParams.shift || 0,
+      key: $stateParams.key,
+      net: $stateParams.net,
+      wgPort: $stateParams.wgPort,
+      tjPort: $stateParams.tjPort,
     };
+    $scope.tags = ($stateParams.tags || []);
+    $scope.tagsAutoComplete = {
+      searchText: '',
+      selectedItem: '',
+      items: [],
+      querySearch: (query) => {
+        if(!query) { return []; }
+        return $scope.tagsAutoComplete.items.filter(f => (f.includes(query) && !$scope.tags.includes(f)));
+      },
+    };
+    $http.get('/api/admin/tag', {
+      params: {
+        type: 'server',
+      }
+    }).then(success => {
+      $scope.tagsAutoComplete.items = success.data;
+    });
     $scope.confirm = () => {
       alertDialog.loading();
-      $http.post('/api/admin/server', {
+      return $http.post('/api/admin/server', {
+        type: $scope.server.type,
         name: $scope.server.name,
         address: $scope.server.address,
         port: +$scope.server.port,
@@ -349,9 +511,20 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
         comment: $scope.server.comment,
         scale: $scope.server.scale,
         shift: $scope.server.shift,
+        key: $scope.server.key,
+        net: $scope.server.net,
+        wgPort: $scope.server.wgPort ? +$scope.server.wgPort : null,
+        tjPort: $scope.server.tjPort ? +$scope.server.tjPort : null,
       }, {
         timeout: 15000,
       }).then(success => {
+        const serverId = success.data.serverId;
+        return $http.put('/api/admin/tag', {
+          type: 'server',
+          key: serverId,
+          tags: $scope.tags,
+        })
+      }).then(() => {
         alertDialog.show('添加服务器成功', '确定');
         $state.go('admin.server');
       }).catch(() => {
@@ -363,13 +536,33 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
     };
   }
 ])
-.controller('AdminEditServerController', ['$scope', '$state', '$stateParams', '$http', 'confirmDialog', 'alertDialog',
-  ($scope, $state, $stateParams, $http, confirmDialog, alertDialog) => {
+.controller('AdminEditServerController', ['$scope', '$state', '$stateParams', '$http', 'confirmDialog', 'alertDialog', '$q',
+  ($scope, $state, $stateParams, $http, confirmDialog, alertDialog, $q) => {
     $scope.setTitle('编辑服务器');
     const serverId = $stateParams.serverId;
     $scope.setMenuButton('arrow_back', function() {
       $state.go('admin.serverPage', { serverId: $stateParams.serverId });
     });
+    $scope.setMenuRightButton('add');
+    $scope.$on('RightButtonClick', () => {
+      $state.go('admin.addServer', {
+        type: $scope.server.type,
+        name: $scope.server.name,
+        comment: $scope.server.comment,
+        address: $scope.server.address,
+        port: $scope.server.port,
+        password: $scope.server.password,
+        method: $scope.server.method,
+        scale: $scope.server.scale,
+        shift: $scope.server.shift,
+        key: $scope.server.key,
+        net: $scope.server.net,
+        wgPort: $scope.server.wgPort,
+        tjPort: $scope.server.tjPort,
+        tags: $scope.tags,
+      });
+    });
+    $scope.server = { check: 1 };
     $scope.methods = [
       'aes-256-cfb',
       'aes-192-cfb',
@@ -383,41 +576,88 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
       'aes-256-gcm',
       'aes-192-gcm',
       'aes-128-gcm',
+      'rc4-md5',
+      'bf-cfb',
+      'salsa20',
+      'chacha20',
       'chacha20-ietf',
-      'chacha20-ietf-poly1305'
+      'chacha20-ietf-poly1305',
+      'xchacha20-ietf-poly1305'
     ];
     $scope.setMethod = () => {
       $scope.server.method = $scope.methodSearch;
     };
+    $scope.serverInfoloaded = false;
+    $http.get('/api/admin/tag', {
+      params: {
+        type: 'server',
+        key: $stateParams.serverId,
+      }
+    }).then(success => {
+      $scope.tags = success.data;
+    });
+    $scope.tagsAutoComplete = {
+      searchText: '',
+      selectedItem: '',
+      items: [],
+      querySearch: (query) => {
+        if(!query) { return []; }
+        return $scope.tagsAutoComplete.items.filter(f => (f.includes(query) && !$scope.tags.includes(f)));
+      },
+    };
+    $http.get('/api/admin/tag', {
+      params: {
+        type: 'server',
+      }
+    }).then(success => {
+      $scope.tagsAutoComplete.items = success.data;
+    });
     $http.get(`/api/admin/server/${ serverId }`, {
       params: {
         noPort: true,
       }
     })
     .then(success => {
-      $scope.server = {
-        name: success.data.name,
-        comment: success.data.comment,
-        address: success.data.host,
-        port: +success.data.port,
-        password: success.data.password,
-        method: success.data.method,
-        scale: success.data.scale,
-        shift: success.data.shift,
-      };
+      $scope.serverInfoloaded = true;
+      $scope.server.type = success.data.type;
+      $scope.server.name = success.data.name;
+      $scope.server.comment = success.data.comment;
+      $scope.server.address = success.data.host;
+      $scope.server.port = +success.data.port;
+      $scope.server.password = success.data.password;
+      $scope.server.method = success.data.method;
+      $scope.server.scale = success.data.scale;
+      $scope.server.shift = success.data.shift;
+      $scope.server.key = success.data.key;
+      $scope.server.net = success.data.net;
+      $scope.server.wgPort = success.data.wgPort;
+      $scope.server.tjPort = success.data.tjPort;
     });
     $scope.confirm = () => {
       alertDialog.loading();
-      $http.put('/api/admin/server/' + $stateParams.serverId, {
-        name: $scope.server.name,
-        comment: $scope.server.comment,
-        address: $scope.server.address,
-        port: +$scope.server.port,
-        password: $scope.server.password,
-        method: $scope.server.method,
-        scale: $scope.server.scale,
-        shift: $scope.server.shift,
-      }).then(success => {
+      $q.all([
+        $http.put('/api/admin/tag', {
+          type: 'server',
+          key: $stateParams.serverId,
+          tags: $scope.tags,
+        }),
+        $http.put('/api/admin/server/' + $stateParams.serverId, {
+          type: $scope.server.type,
+          name: $scope.server.name,
+          address: $scope.server.address,
+          port: +$scope.server.port,
+          password: $scope.server.password,
+          method: $scope.server.method,
+          comment: $scope.server.comment,
+          scale: $scope.server.scale,
+          shift: $scope.server.shift,
+          key: $scope.server.key,
+          net: $scope.server.net,
+          wgPort: $scope.server.wgPort ? +$scope.server.wgPort : null,
+          tjPort: $scope.server.tjPort ? +$scope.server.tjPort : null,
+          check: $scope.server.check,
+        }),
+      ]).then(() => {
         alertDialog.show('修改服务器成功', '确定');
         $state.go('admin.serverPage', { serverId: $stateParams.serverId });
       }).catch(() => {
@@ -438,5 +678,6 @@ app.controller('AdminServerController', ['$scope', '$http', '$state', 'moment', 
         $state.go('admin.server');
       });
     };
+    $scope.tags = [];
   }
 ]);

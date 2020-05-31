@@ -17,7 +17,7 @@ if(config.plugins.email.type === 'smtp') {
   emailConfig = {
     host: config.plugins.email.host,
     port: config.plugins.email.port || 465,
-    secure: (config.plugins.email.port === 465 || !config.plugins.email.port) ? true : false,
+    secure: config.plugins.email.hasOwnProperty('secure') ? config.plugins.email.secure : true,
     auth: {
       user: config.plugins.email.username,
       pass: config.plugins.email.password,
@@ -25,8 +25,12 @@ if(config.plugins.email.type === 'smtp') {
     tls: {
       rejectUnauthorized: !config.plugins.email.allowUnauthorizedTls,
     },
+    proxy: config.plugins.email.proxy || '',
   };
   transporter = nodemailer.createTransport(emailConfig);
+  if(config.plugins.email.proxy && config.plugins.email.proxy.indexOf('socks') >= 0) {
+    transporter.set('proxy_socks_module', require('socks'));
+  }
 } else if (config.plugins.email.type === 'mailgun') {
   emailConfig = {
     baseUrl: config.plugins.email.baseUrl,
@@ -51,11 +55,45 @@ if(config.plugins.email.type === 'smtp') {
       cb(err);
     });
   };
+} else if (config.plugins.email.type === 'sendgrid') {
+  emailConfig = {
+    apiKey: config.plugins.email.apiKey,
+  };
+  const uri = 'https://api.sendgrid.com/v3/mail/send';
+  transporter = {};
+  transporter.sendMail = (options, cb) => {
+    rp({
+      uri,
+      method: 'POST',
+      json: true,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${ emailConfig.apiKey }`,
+      },
+      body: {
+        personalizations: [
+          {
+            to: [{
+              email: options.to,
+            }]
+          }
+        ],
+        from: {
+          email: options.from,
+        },
+        subject: options.subject,
+        content: [{
+          type: 'text/plain',
+          value: options.text,
+        }]
+      },
+    }).then(success => {
+      cb(null);
+    }).catch(err => {
+      cb(err);
+    });
+  };
 }
-
-
-
-
 
 const sendMail = async (to, subject, text, options = {}) => {
   if(isInBlackList(to)) {
@@ -101,6 +139,7 @@ const sendMail = async (to, subject, text, options = {}) => {
     remark: options.remark,
     ip: options.ip,
     session: options.session,
+    telegramId: options.telegramId,
     time: Date.now(),
   });
   return;
@@ -118,7 +157,7 @@ const sendCode = async (to, subject = 'subject', text, options = {}) => {
     }
     const code = Math.random().toString().substr(2, 6);
     if(text.indexOf('${code}') >= 0) {
-      text = text.replace(/\$\{code\}/g, '[ ' + code + ']');
+      text = text.replace(/\$\{code\}/g, '[ ' + code + ' ]');
     } else {
       text += '\n[ ' + code + ' ]';
     }
@@ -127,6 +166,7 @@ const sendCode = async (to, subject = 'subject', text, options = {}) => {
       remark: code,
       ip: options.ip,
       session: options.session,
+      telegramId: options.telegramId,
     });
     logger.info(`[${ to }] Send code: ${ code }`);
     return code;
@@ -154,6 +194,26 @@ const checkCode = async (email, code) => {
   }
 };
 
+const checkCodeFromTelegram = async (telegramId, code) => {
+  logger.info(`Telegram[${ telegramId }] Check code: ${ code }`);
+  const sendEmailTime = 10;
+  try {
+    const findEmail = await knex('email').where({
+      telegramId,
+      remark: code,
+      type: 'code',
+    }).whereBetween('time', [Date.now() - sendEmailTime * 60 * 1000, Date.now()]);
+    if(findEmail.length === 0) {
+      throw new Error('Email or code not found');
+    }
+    return findEmail[0];
+  } catch(err) {
+    logger.error(`Check code fail: ${ err }`);
+    return Promise.reject(err);
+  }
+};
+
+exports.checkCodeFromTelegram = checkCodeFromTelegram;
 exports.checkCode = checkCode;
 exports.sendCode = sendCode;
 exports.sendMail = sendMail;

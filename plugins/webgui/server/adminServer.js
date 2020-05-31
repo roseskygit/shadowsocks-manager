@@ -1,5 +1,6 @@
 const manager = appRequire('services/manager');
 const serverManager = appRequire('plugins/flowSaver/server');
+const webguiTag = appRequire('plugins/webgui_tag');
 const knex = appRequire('init/knex').knex;
 
 exports.getServers = (req, res) => {
@@ -41,30 +42,21 @@ exports.getOneServer = (req, res) => {
   });
 };
 
-exports.addServer = (req, res) => {
-  req.checkBody('name', 'Invalid name').notEmpty();
-  req.checkBody('address', 'Invalid address').notEmpty();
-  req.checkBody('port', 'Invalid port').isInt({min: 1, max: 65535});
-  req.checkBody('password', 'Invalid password').notEmpty();
-  req.checkBody('method', 'Invalid method').notEmpty();
-  req.checkBody('scale', 'Invalid scale').notEmpty();
-  req.checkBody('shift', 'Invalid shift').isInt();
-  req.getValidationResult().then(result => {
-    if(result.isEmpty()) {
-      const address = req.body.address;
-      const port = +req.body.port;
-      const password = req.body.password;
-      return manager.send({
-        command: 'flow',
-        options: { clear: false, },
-      }, {
-        host: address,
-        port,
-        password,
-      });
-    }
-    result.throw();
-  }).then(success => {
+exports.addServer = async (req, res) => {
+  try {
+    req.checkBody('type', 'Invalid type').notEmpty();
+    req.checkBody('name', 'Invalid name').notEmpty();
+    req.checkBody('address', 'Invalid address').notEmpty();
+    req.checkBody('port', 'Invalid port').isInt({min: 1, max: 65535});
+    req.checkBody('password', 'Invalid password').notEmpty();
+    req.checkBody('method', 'Invalid method').notEmpty();
+    req.checkBody('scale', 'Invalid scale').notEmpty();
+    req.checkBody('shift', 'Invalid shift').isInt();
+    const result = await req.getValidationResult();
+    if(!result.isEmpty()) { return Promise.reject(result.array()); }
+    const type = req.body.type;
+    const isWG = type === 'WireGuard';
+    const isTj = type === 'Trojan';
     const name = req.body.name;
     const comment = req.body.comment;
     const address = req.body.address;
@@ -72,9 +64,21 @@ exports.addServer = (req, res) => {
     const password = req.body.password;
     const method = req.body.method;
     const scale = req.body.scale;
-    const shift = req.body.shift;
-    // return serverManager.add(name, address, port, password, method, scale, comment, shift);
-    return serverManager.add({
+    const shift = isWG ? 0 : req.body.shift;
+    const key = isWG ? req.body.key : null;
+    const net = isWG ? req.body.net: null;
+    const wgPort = isWG ? req.body.wgPort : null;
+    const tjPort = isTj ? req.body.tjPort : null;
+    await manager.send({
+      command: 'flow',
+      options: { clear: false, },
+    }, {
+      host: address,
+      port,
+      password,
+    });
+    const [ serverId ] = await serverManager.add({
+      type,
       name,
       host: address,
       port,
@@ -83,40 +87,34 @@ exports.addServer = (req, res) => {
       scale,
       comment,
       shift,
+      key,
+      net,
+      wgPort,
+      tjPort,
     });
-  }).then(success => {
-    res.send('success');
-  }).catch(err => {
+    res.send({ serverId });
+  } catch(err) {
     console.log(err);
     res.status(403).end();
-  });
+  }
 };
 
-exports.editServer = (req, res) => {
-  req.checkBody('name', 'Invalid name').notEmpty();
-  req.checkBody('address', 'Invalid address').notEmpty();
-  req.checkBody('port', 'Invalid port').isInt({min: 1, max: 65535});
-  req.checkBody('password', 'Invalid password').notEmpty();
-  req.checkBody('method', 'Invalid method').notEmpty();
-  req.checkBody('scale', 'Invalid scale').notEmpty();
-  req.checkBody('shift', 'Invalid shift').isInt();
-  req.getValidationResult().then(result => {
-    if(result.isEmpty()) {
-      const address = req.body.address;
-      const port = +req.body.port;
-      const password = req.body.password;
-      return manager.send({
-        command: 'flow',
-        options: { clear: false, },
-      }, {
-        host: address,
-        port,
-        password,
-      });
-    }
-    result.throw();
-  }).then(success => {
+exports.editServer = async (req, res) => {
+  try {
+    req.checkBody('type', 'Invalid type').notEmpty();
+    req.checkBody('name', 'Invalid name').notEmpty();
+    req.checkBody('address', 'Invalid address').notEmpty();
+    req.checkBody('port', 'Invalid port').isInt({min: 1, max: 65535});
+    req.checkBody('password', 'Invalid password').notEmpty();
+    req.checkBody('method', 'Invalid method').notEmpty();
+    req.checkBody('scale', 'Invalid scale').notEmpty();
+    req.checkBody('shift', 'Invalid shift').isInt();
+    const result = await req.getValidationResult();
+    if(!result.isEmpty()) { return Promise.reject(result.array()); }
     const serverId = req.params.serverId;
+    const type = req.body.type;
+    const isWG = type === 'WireGuard';
+    const isTj = type === 'Trojan';
     const name = req.body.name;
     const comment = req.body.comment;
     const address = req.body.address;
@@ -124,10 +122,23 @@ exports.editServer = (req, res) => {
     const password = req.body.password;
     const method = req.body.method;
     const scale = req.body.scale;
-    const shift = req.body.shift;
-    // return serverManager.edit(serverId, name, address, port, password, method, scale, comment, shift);
-    return serverManager.edit({
+    const shift = isWG ? 0 : req.body.shift;
+    const key = isWG ? req.body.key : null;
+    const net = isWG ? req.body.net: null;
+    const wgPort = isWG ? req.body.wgPort : null;
+    const tjPort = isTj ? req.body.tjPort : null;
+    const check = +req.body.check;
+    await manager.send({
+      command: 'flow',
+      options: { clear: false, },
+    }, {
+      host: address,
+      port,
+      password,
+    });
+    await serverManager.edit({
       id: serverId,
+      type,
       name,
       host: address,
       port,
@@ -136,13 +147,17 @@ exports.editServer = (req, res) => {
       scale,
       comment,
       shift,
+      key,
+      net,
+      wgPort,
+      tjPort,
+      check,
     });
-  }).then(success => {
     res.send('success');
-  }).catch(err => {
+  } catch(err) {
     console.log(err);
     res.status(403).end();
-  });
+  }
 };
 
 exports.deleteServer = (req, res) => {
@@ -154,4 +169,29 @@ exports.deleteServer = (req, res) => {
     console.log(err);
     res.status(403).end();
   });
+};
+
+exports.getTags = async (req, res) => {
+  try {
+    const type = req.query.type;
+    const key = +req.query.key;
+    const tags = await webguiTag.getTags(type, key);
+    res.send(tags);
+  } catch(err) {
+    console.log(err);
+    res.status(403).end();
+  }
+};
+
+exports.setTags = async (req, res) => {
+  try {
+    const type = req.body.type;
+    const key = +req.body.key;
+    const tags = req.body.tags;
+    await webguiTag.setTags(type, key, tags);
+    res.send('success');
+  } catch(err) {
+    console.log(err);
+    res.status(403).end();
+  }
 };

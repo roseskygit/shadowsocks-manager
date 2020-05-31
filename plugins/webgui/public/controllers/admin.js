@@ -1,12 +1,18 @@
 const app = angular.module('app');
 
-app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state', '$http', '$document', '$interval', '$timeout', '$localStorage',
-  ($scope, $mdMedia, $mdSidenav, $state, $http, $document, $interval, $timeout, $localStorage) => {
-    if ($localStorage.home.status !== 'admin') {
-      $state.go('home.index');
+app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state', '$http', '$document', '$interval', '$timeout', '$localStorage', 'configManager',
+  ($scope, $mdMedia, $mdSidenav, $state, $http, $document, $interval, $timeout, $localStorage, configManager) => {
+    const config = configManager.getConfig();
+    if(config.status === 'normal') {
+      return $state.go('user.index');
+    } else if(!config.status) {
+      return $state.go('home.index');
     } else {
       $scope.setMainLoading(false);
     }
+    $scope.setConfig(config);
+    $scope.setId(config.id);
+
     $scope.innerSideNav = true;
     $scope.sideNavWidth = () => {
       if($scope.innerSideNav) {
@@ -27,6 +33,7 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
       name: '服务器',
       icon: 'cloud',
       click: 'admin.server',
+      hide: !!($scope.id !== 1),
     }, {
       name: '用户',
       icon: 'people',
@@ -39,6 +46,7 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
       name: '订单',
       icon: 'attach_money',
       click: 'admin.pay',
+      hide: !($scope.config.paypal || $scope.config.giftcard || $scope.config.refCode || $scope.config.alipay),
     }, {
       name: '设置',
       icon: 'settings',
@@ -52,6 +60,7 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
         $http.post('/api/home/logout').then(() => {
           $localStorage.home = {};
           $localStorage.admin = {};
+          configManager.deleteConfig();
           $state.go('home.index');
         });
       },
@@ -77,10 +86,21 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
     $scope.title = '';
     $scope.setTitle = str => { $scope.title = str; };
     $scope.fabButton = false;
+    $scope.fabNumber = null;
+    $scope.fabButtonIcon = '';
     $scope.fabButtonClick = () => {};
-    $scope.setFabButton = (fn) => {
+    $scope.setFabButton = (fn, icon = '') => {
+      $scope.fabButtonIcon = icon;
+      if(!fn) {
+        $scope.fabButton = false;
+        $scope.fabButtonClick = () => {};
+        return;
+      }
       $scope.fabButton = true;
       $scope.fabButtonClick = fn;
+    };
+    $scope.setFabNumber = number => {
+      $scope.fabNumber = number;
     };
     $scope.menuButtonIcon = '';
     $scope.menuButtonClick = () => {};
@@ -139,6 +159,8 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
     };
     $scope.$on('$stateChangeStart', function(event, toUrl, fromUrl) {
       $scope.fabButton = false;
+      $scope.fabNumber = null;
+      $scope.fabButtonIcon = '';
       $scope.title = '';
       $scope.menuButtonIcon = '';
       $scope.menuRightButtonIcon = '';
@@ -167,9 +189,22 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
       $scope.loginUsers = $localStorage.admin.indexInfo.data.login;
       $scope.orders = $localStorage.admin.indexInfo.data.order;
       $scope.paypalOrders = $localStorage.admin.indexInfo.data.paypalOrder;
+      $scope.topFlow = $localStorage.admin.indexInfo.data.topFlow;
     }
     $scope.toUser = id => {
       $state.go('admin.userPage', { userId: id });
+    };
+    $scope.toRecentSignup = () => {
+      $state.go('admin.recentSignup');
+    };
+    $scope.toRecentLogin = () => {
+      $state.go('admin.recentLogin');
+    };
+    $scope.toTopFlow = () => {
+      $state.go('admin.topFlow');
+    };
+    $scope.toPay = type => {
+      $state.go('admin.pay', { myPayType: type });
     };
     const updateIndexInfo = () => {
       adminApi.getIndexInfo().then(success => {
@@ -181,6 +216,7 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
         $scope.loginUsers = success.login;
         $scope.orders = success.order;
         $scope.paypalOrders = success.paypalOrder;
+        $scope.topFlow = success.topFlow;
       });
     };
     updateIndexInfo();
@@ -199,18 +235,77 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
     $scope.showOrderInfo = order => {
       orderDialog.show(order);
     };
+    $scope.toTopUser = top => {
+      if(top.email) {
+        $state.go('admin.userPage', { userId: top.userId });
+      } else {
+        $state.go('admin.accountPage', { accountId: top.accountId });
+      }
+    };
   }
 ])
-.controller('AdminPayController', ['$scope', 'adminApi', 'orderDialog', '$mdMedia', '$localStorage', 'orderFilterDialog', '$timeout', '$state',
-  ($scope, adminApi, orderDialog, $mdMedia, $localStorage, orderFilterDialog, $timeout, $state) => {
+.controller('AdminRecentSignupController', ['$scope', '$http', '$state', ($scope, $http, $state) => {
+  $scope.setTitle('最新注册用户');
+  $scope.setMenuButton('arrow_back', 'admin.index');
+  $scope.recentUsers = null;
+  $http.get('/api/admin/user/recentSignup?number=100').then(success => {
+    $scope.recentUsers = success.data;
+  });
+  $scope.toUser = id => {
+    $state.go('admin.userPage', { userId: id });
+  };
+}])
+.controller('AdminRecentLoginController', ['$scope', '$http', '$state', ($scope, $http, $state) => {
+  $scope.setTitle('最近登录用户');
+  $scope.setMenuButton('arrow_back', 'admin.index');
+  $scope.recentUsers = null;
+  $http.get('/api/admin/user/recentLogin?number=-1').then(success => {
+    $scope.recentUsers = success.data;
+  });
+  $scope.toUser = id => {
+    $state.go('admin.userPage', { userId: id });
+  };
+}])
+.controller('AdminTopFlowController', ['$scope', '$http', '$state', ($scope, $http, $state) => {
+  $scope.setTitle('今日流量排行');
+  $scope.setMenuButton('arrow_back', 'admin.index');
+  $scope.topUsers = null;
+  $http.get('/api/admin/flow/top?number=150').then(success => {
+    $scope.topUsers = success.data;
+  });
+  $scope.toUser = user => {
+    if(user.email) {
+      $state.go('admin.userPage', { userId: user.userId });
+    } else {
+      $state.go('admin.accountPage', { accountId: user.accountId });
+    }
+  };
+}])
+.controller('AdminPayController', ['$scope', 'adminApi', 'orderDialog', '$mdMedia', '$localStorage', 'orderFilterDialog', '$timeout', '$state', '$stateParams',
+  ($scope, adminApi, orderDialog, $mdMedia, $localStorage, orderFilterDialog, $timeout, $state, $stateParams) => {
     $scope.setTitle('订单');
     $scope.setMenuSearchButton('search');
     $scope.showOrderInfo = order => {
       orderDialog.show(order);
     };
-    $scope.myPayType = '支付宝';
+    $scope.myPayType = '';
     let tabSwitchTime = 0;
-    $scope.payTypes = [{ name: '支付宝' }, { name: 'Paypal' }];
+    $scope.payTypes = [];
+    if($scope.config.alipay) { $scope.payTypes.push({ name: '支付宝' }); }
+    if($scope.config.paypal) { $scope.payTypes.push({ name: 'Paypal' }); }
+    if($scope.config.giftcard) { $scope.payTypes.push({ name: '充值码' }); }
+    if($scope.config.refCode) { $scope.payTypes.push({ name: '邀请码' }); }
+    if($scope.payTypes.length) {
+      $scope.myPayType = $stateParams.myPayType || $scope.payTypes[0].name;
+      $scope.defaultTabIndex = 0;
+      for(const pt of $scope.payTypes) {
+        if(pt.name === $scope.myPayType) {
+          break;
+        }
+        $scope.defaultTabIndex += 1;
+      }
+    }
+    
     $scope.selectPayType = type => {
       tabSwitchTime = Date.now();
       $scope.myPayType = type;
@@ -228,6 +323,7 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
           FINISH: true,
           TRADE_CLOSED: true,
         },
+        group: -1,
       };
     }
     $scope.orderFilter = $localStorage.admin.orderFilterSettings;
@@ -241,16 +337,22 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
       if($mdMedia('md')) { return 40; }
       if($mdMedia('gt-md')) { return 50; }
     };
-    $scope.getOrders = (search) => {
+    $scope.getOrders = search => {
+      if(!$scope.payTypes.length) { return; }
       const oldTabSwitchTime = tabSwitchTime;
       $scope.isOrderLoading = true;
       adminApi.getOrder($scope.myPayType, {
+        start: $scope.orderFilter.start,
+        end: $scope.orderFilter.end,
         page: $scope.currentPage,
         pageSize: getPageSize(),
         search,
         // sort: $scope.userSort.sort,
+        group: $scope.orderFilter.group,
         filter: Object.keys($scope.orderFilter.filter).filter(f => $scope.orderFilter.filter[f]),
       }).then(success => {
+        if($state.current.name !== 'admin.pay') { return; }
+        $scope.setFabNumber(success.total);
         if(oldTabSwitchTime !== tabSwitchTime) { return; }
         if(!search && $scope.menuSearch.text) { return; }
         if(search && search !== $scope.menuSearch.text) { return; }
@@ -296,7 +398,7 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
     };
     $scope.setMenuRightButton('sort_by_alpha');
     $scope.orderFilterDialog = () => {
-      orderFilterDialog.show().then(() => {
+      orderFilterDialog.show($scope.id).then(() => {
         $scope.orders = [];
         $scope.currentPage = 1;
         $scope.isOrderPageFinish = false;
@@ -306,6 +408,14 @@ app.controller('AdminController', ['$scope', '$mdMedia', '$mdSidenav', '$state',
     $scope.$on('RightButtonClick', () => {
       $scope.orderFilterDialog();
     });
+    $scope.setFabButton(() => {
+      adminApi.getCsvOrder($scope.myPayType, {
+        start: $scope.orderFilter.start,
+        end: $scope.orderFilter.end,
+        group: $scope.orderFilter.group,
+        filter: Object.keys($scope.orderFilter.filter).filter(f => $scope.orderFilter.filter[f]),
+      });
+    }, 'get_app');
   }
 ]);
 
